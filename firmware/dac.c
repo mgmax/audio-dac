@@ -1,27 +1,36 @@
 /*
  *    Filename: dac.c
- *     Version: 0.0.3
  * Description: Programm für den Audio-DAC von Albert Frisch, diesmal in C
  *     License: GPLv3 or later
  *     Depends: global.h, io.h, lcd.c
  *
- *      Author: Copyright (C) Philipp Hörauf
- *        Date: 2010-05-20
+ *      Author: Copyright (C) Philipp Hörauf, Max Gaukler and others
  *
- *  This program is free software; you can redistribute it and/or modify
+ *  This program is free software: you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
+ *  the Free Software Foundation, either version 3 of the License, or
  *  (at your option) any later version.
  *
  *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  *  GNU General Public License for more details.
  *
  *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
+ *  Dieses Programm ist Freie Software: Sie können es unter den Bedingungen
+ *  der GNU General Public License, wie von der Free Software Foundation,
+ *  Version 3 der Lizenz oder (nach Ihrer Option) jeder späteren
+ *  veröffentlichten Version, weiterverbreiten und/oder modifizieren.
+ *
+ *  Dieses Programm wird in der Hoffnung, dass es nützlich sein wird, aber
+ *  OHNE JEDE GEWÄHRLEISTUNG, bereitgestellt; sogar ohne die implizite
+ *  Gewährleistung der MARKTFÄHIGKEIT oder EIGNUNG FÜR EINEN BESTIMMTEN ZWECK.
+ *  Siehe die GNU General Public License für weitere Details.
+ *
+ *  Sie sollten eine Kopie der GNU General Public License zusammen mit diesem
+ *  Programm erhalten haben. Wenn nicht, siehe <http://www.gnu.org/licenses/>.
  */
 
 /*
@@ -39,8 +48,14 @@
  *  	auch das LCD muss nach den Frisch-Plänen angeschlossen werden.
  *  	einzige Änderung: der DAC läuft mit 24bit statt 16bit.
  *  	keine Lautstärkeregelung, Speicherung des aktiven Kanals beim Abschalten
- *  	(TODO), Kanalwechsel mittels Taster
+ *  	, Kanalwechsel mittels Taster
  *
+ *  - MAX:
+ *    fast so wie FRISCH
+ *    aber: AVCC muss an 5V angeschlossen werden
+ *    anstatt Taster 2 wird ein Poti zwischen 5V und GND angeschlossen, um die Lautstärke einzustellen (Lautstärkeregelung über den DAC)
+ *    Kanalwechsel geht nur noch mit Taster 1
+ *  
  *  - SCHUHMANN:
  *  	Sehr zusammengesparte Version ohne LCD, dafür mit drei LEDs für die verschiedenen
  *  	Inputs. Lautstärkeregelung des DAC aktiv und über ADC des Atmels mit
@@ -58,8 +73,8 @@
  *  Das Standart-Relais an PA0 ist in allen MODI enthalten.
  */
 
-#include "../../../atmel/lib/0.1.3/global.h"
-#include "../../../atmel/lib/0.1.3/io/io.h"
+#include "../../../../atmel/lib/0.1.3/global.h"
+#include "../../../../atmel/lib/0.1.3/io/io.h"
 #include <avr/interrupt.h>
 #include <math.h>
 
@@ -114,9 +129,9 @@
 #define LCD_D7_PIN PC0
 #define LCD_LINES 2
 #define LCD_COLS 16
-#include "../../../atmel/lib/0.1.3/io/display/lcd/lcd.c"
-#include "../../../atmel/lib/0.1.3/io/entprellung.h"
-#include "../../../atmel/lib/0.1.3/global.h"
+#include "../../../../atmel/lib/0.1.3/io/display/lcd/lcd.c"
+#include "../../../../atmel/lib/0.1.3/io/entprellung.h"
+#include "../../../../atmel/lib/0.1.3/global.h"
 entprell_struct taster1, taster2;
 #define TASTER1_EVENT() in_entprellt_rising(&taster1, PINA, PA4, 1)
 #define TASTER2_EVENT() in_entprellt_rising(&taster2, PINA, PA3, 1)
@@ -337,6 +352,26 @@ void ReceiverSetChannel(uint8_t ch) {
 #endif
 }
 
+uint16_t ReceiverGetSamplerate(void) {
+	/// return the samplerate in units of 0.1kHz
+	// Register 18h:
+	// ratio=Fso/Fsi * 64
+	uint8_t ratio=spi_rx_cs(0x18);
+	
+	// OMCK=256*Fso  = Quartz frequency
+	// Fsi = input samplerate
+	
+	// solving these equations
+	// => samplerate [Hz] = fQuartz / (4 * ratio)
+	// => samplerate [0.1kHz] = samplerate / 100
+	const uint32_t fQuartz=24576000;
+	uint32_t samplerate=(fQuartz/(100*4))/ratio;
+	if (samplerate > UINT16_MAX) {
+		samplerate=UINT16_MAX;
+	}
+	return (uint16_t)samplerate;
+}
+
 void DacSetVolume(uint8_t left, uint8_t right) { // 255 == volle Lautstärke
 	spi_tx_pcm(16, left);
 	spi_tx_pcm(17, right);
@@ -410,13 +445,13 @@ int main(void) {
 		uint16_t adcSampleBuffer[ADC_AVERAGE_SAMPLES];
 		uint8_t adcSampleBufferIndex=0;
 	#endif
-		
+	
 	
 	#if defined(FRISCH) || defined(MAX)
 		lcd_init();
 		lcd_print("   Audio-DAC    ");
 		lcd_set_position(16);
-		lcd_putstr("    starte     ");
+		lcd_putstr_P(PSTR("    starte     "));
 		DacSetVolume(0,0); // erstmal Volume runterdrehen
 		delayms(500);
 		#if defined(FRISCH)
@@ -466,6 +501,9 @@ int main(void) {
 	uint8_t eeprom_store_delay=0; // wird auf 255 gesetzt, um nach Änderungen zeitverzögert den Channel ins ROM zu speichern
 	#ifdef MAX
 		uint32_t volume=0;
+		uint32_t lastVolume=0;
+		uint8_t lastRealVolume=0;
+		const uint8_t volumeHysteresis=2*ADC_AVERAGE_SAMPLES; // 0.5 volume-units hysteresis
 	#endif
 	while(1) {
 		if (TASTER1_EVENT()) {
@@ -494,18 +532,42 @@ int main(void) {
 		delayms(1);
 		lcd_set_position(0);
 		ReceiverSetChannel(activeChannel);
-		if (activeChannel==0) {
-			lcd_putstr_P(PSTR("In: Opto SPDIF  "));
-		} else if (activeChannel==1) {
-			lcd_putstr_P(PSTR("In: Koax SPDIF  "));
-		} else if (activeChannel==2) {
-			lcd_putstr_P(PSTR("In: USB PCM2704 "));
-		} else {
-			lcd_putstr_P(PSTR("Fehler"));
-		}
-
+		#ifdef FRISCH
+			if (activeChannel==0) {
+				lcd_putstr_P(PSTR("In: Opto SPDIF  "));
+			} else if (activeChannel==1) {
+				lcd_putstr_P(PSTR("In: Koax SPDIF  "));
+			} else if (activeChannel==2) {
+				lcd_putstr_P(PSTR("In: USB PCM2704 "));
+			} else {
+				lcd_putstr_P(PSTR("Fehler"));
+			}
+		#endif
+		
 		#ifdef MAX
-			
+			// Display line 1:
+			// Opto SPDIF 44.1k
+			if (activeChannel==0) {
+				lcd_putstr_P(PSTR("Opto SPDIF "));
+			} else if (activeChannel==1) {
+				lcd_putstr_P(PSTR("Koax SPDIF "));
+			} else if (activeChannel==2) {
+				lcd_putstr_P(PSTR("USB        "));
+			} else {
+				lcd_putstr_P(PSTR("Fehler"));
+			}
+			uint8_t rxError=spi_rx_cs(0x0C);
+			// TODO Sampleraten-Erkennung geht nicht.
+			lcd_putstr_P(PSTR("     "));
+// 			if (rxError) {
+// 				lcd_putstr_P(PSTR("--.-"));
+// 			} else {
+// 				uint16_t samplerate=ReceiverGetSamplerate();
+// 				//snprintf(tmpstr,sizeof(tmpstr),"%2u.%01u",samplerate/10,samplerate%10);
+// 				snprintf(tmpstr,sizeof(tmpstr),"%u.%01u",samplerate/10,samplerate%10);
+// 				lcd_putstr(tmpstr);
+// 			}
+// 			lcd_putchar('k');
 			if(adcReady()) {
 				adcSampleBuffer[adcSampleBufferIndex]=ADC;
 				adcStartConversion();
@@ -517,18 +579,34 @@ int main(void) {
 				for (uint8_t i=0; i<ADC_AVERAGE_SAMPLES; i++) {
 					volume += adcSampleBuffer[i];
 				}
-				volume=volume/(4*ADC_AVERAGE_SAMPLES);
+				
+				
 			}
-			DacSetVolume(volume,volume);
-			if (spi_rx_cs(0x0C) != 0) {
+			// Hysteresis so that small ADC noise does not cause the volume to toggle between n and n+1:
+			// only change volume if the value has changed enough
+			if ((volume > lastVolume + volumeHysteresis) || (volume + volumeHysteresis < lastVolume)) {
+				uint16_t realVolume=volume/(4*ADC_AVERAGE_SAMPLES);
+				DacSetVolume(realVolume,realVolume);
+				lastVolume=volume;
+				lastRealVolume=realVolume;
+			}
+			if (rxError) {
 				// Fehler
 				lcd_putstr_P(PSTR(" kein Signal    "));
 			} else {
-				lcd_putstr_P(PSTR(" Volume   "));
+				// Vol -123.5 dBFS
+				lcd_putstr_P(PSTR("Vol "));
 // 				snprintf(tmpstr,sizeof(tmpstr),"%03d",volume);
-				snprintf(tmpstr,sizeof(tmpstr),"%03d",volume);
+				
+				snprintf(tmpstr,sizeof(tmpstr),"%4d",-(int16_t)lastRealVolume/2);
 				lcd_putstr(tmpstr);
-				lcd_putstr_P(PSTR("  %"));
+				lcd_putchar('.');
+				if (lastRealVolume%2) {
+					lcd_putchar('5');
+				} else {
+					lcd_putchar('0');
+				}
+				lcd_putstr_P(PSTR("dBFS"));
 			}
 			
 		#endif
